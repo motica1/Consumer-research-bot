@@ -82,7 +82,7 @@ This bot follows a modular architecture designed for scalability and integration
 
 5. **Run the application:**
    ```bash
-   python app.py
+   chainlit run app.py -w
    ```
 
 ---
