@@ -5,6 +5,7 @@ import openai
 import os
 import asyncio
 from prompts import ASSESSMENT_PROMPT, SYSTEM_PROMPT
+from functions import get_wirecutter_reviews
 
 # Load environment variables
 load_dotenv()
@@ -13,7 +14,7 @@ configurations = {
     "openai_gpt-4": {
         "endpoint_url": os.getenv("OPENAI_ENDPOINT"),
         "api_key": os.getenv("OPENAI_API_KEY"),
-        "model": "gpt-4o-mini"
+        "model": "gpt-4"
     }
 }
 
@@ -32,12 +33,48 @@ gen_kwargs = {
     "max_tokens": 500
 }
 
+@cl.on_chat_start
+def on_chat_start():    
+    message_history = [{"role": "system", "content": SYSTEM_PROMPT}]
+    cl.user_session.set("message_history", message_history)
+
 @traceable
 async def assess_message():
-    # Generate the response
-    response = await client.chat.completions.create(messages=[{"role": "system", "content": SYSTEM_PROMPT}], **gen_kwargs)
 
+    print("Assessing message")
+    functions = [
+        {
+            "name": "get_wirecutter_reviews",
+            "description": "Get reviews from the Wirecutter website.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "The keyword to search for."
+                    }
+                },
+                "required": ["keyword"]
+            }
+        }
+    ]
+
+    
+    # Generate the response
+    response = await client.chat.completions.create(
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}],
+        functions=functions,
+        function_call="auto", 
+        **gen_kwargs)
+
+    print("Response: ", response)
     output = response.choices[0].message.content.strip()
+    print("Output: ", output)
+
+    if "reviews" in output.lower():
+        keyword = output.split("reviews")[1].strip()
+        reviews = await get_wirecutter_reviews(keyword)
+        return reviews
 
 @traceable
 @cl.on_message
@@ -48,7 +85,7 @@ async def on_message(message: cl.Message):
 
     message_history.append({"role": "user", "content": message.content})
 
-    asyncio.create_task(assess_message())
+    message_history.append({"role": "system", "content": await assess_message()})
 
     response_message = cl.Message(content="")
     await response_message.send()
@@ -59,7 +96,9 @@ async def on_message(message: cl.Message):
             if token := part.choices[0].text or "":
                 await response_message.stream_token(token)
     else:
-        stream = await client.chat.completions.create(messages=message_history, stream=True, **gen_kwargs)
+        # Filter out messages with null content
+        valid_messages = [msg for msg in message_history if msg.get("content") is not None]
+        stream = await client.chat.completions.create(messages=valid_messages, stream=True, **gen_kwargs)
         async for part in stream:
             if token := part.choices[0].delta.content or "":
                 await response_message.stream_token(token)
